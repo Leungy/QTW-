@@ -167,8 +167,8 @@ vizSmooth = predictSurface(smoothSS)
 plot.surface(vizSmooth, type = "C")
 points(oneAPAngle$posX, oneAPAngle$posY, pch=19, cex = 0.5)
 
-#median signal maps for 2 AP+2Angles 
-surfaceSS = function(data,mac=mac,angle=angle){
+#median signal maps for 2 AP+ 2Angles at 0 & 135
+surfaceSS = function(data,mac=mac,angle=0){
   oneAPAngle = data[data$mac == mac & data$angle == angle,] 
   smoothSS = Tps(oneAPAngle[, c("posX","posY")], oneAPAngle$avgSignal)
   vizSmooth = predictSurface(smoothSS)
@@ -181,6 +181,107 @@ mapply(surfaceSS, mac = subMacs[ rep(c(5, 1), each = 2) ],
        angle = rep(c(0, 135), 2),
        data = list(data = offlineSummary))
 par(parCur)
+
+# subset from offlineSummary to return all subMacs that are not the second subMac
+offlineSummary = subset(offlineSummary, mac != subMacs[2])
+
+#matrix with relevant positions for 6 access points
+AP = matrix( c( 7.5, 6.3, 2.5, -.8, 12.8, -2.8,
+                1, 14, 33.5, 9.3, 33.5, 2.8),
+             ncol = 2, byrow = TRUE,
+             dimnames = list(subMacs[ -2 ], c("x", "y") ))
+
+AP
+
+# X,Y position differences between emitter(device) and receiver(AP)
+diffs = offlineSummary[ , c("posX", "posY")] - AP[ offlineSummary$mac, ]
+
+#euclidean distance between emitter and receiver
+offlineSummary$dist = sqrt(diffs[ , 1]^2 + diffs[ , 2]^2)
+
+#scatter plots for each AO and orientation
+xyplot(signal ~ dist | factor(mac) + factor(angle),
+       data = offlineSummary, pch = 19, cex = 0.3,
+       xlab ="distance")
+
+#readData function
+readData = 
+  function(filename = "/home/yat-l/Documents/MSDS 7333 QTW/Wk1/offline.final.trace.txt", 
+           subMacs = c("00:0f:a3:39:e1:c0", "00:0f:a3:39:dd:cd", "00:14:bf:b1:97:8a",
+                       "00:14:bf:3b:c7:c6", "00:14:bf:b1:97:90", "00:14:bf:b1:97:8d",
+                       "00:14:bf:b1:97:81"))
+  {
+    txt = readLines(filename)
+    lines = txt[ substr(txt, 1, 1) != "#" ]
+    tmp = lapply(lines, processLine)
+    offline = as.data.frame(do.call("rbind", tmp), stringsAsFactors= FALSE) 
+    
+    names(offline) = c("time", "scanMac", 
+                       "posX", "posY", "posZ", "orientation", 
+                       "mac", "signal", "channel", "type")
+    
+    # subset all type 3
+    offline = offline[ offline$type == "3", ]
+    
+    # delete scanMac, posZ, channel, and type
+    dropVars = c("scanMac", "posZ", "channel", "type")
+    offline = offline[ , !( names(offline) %in% dropVars ) ]
+    
+    # subset out all macs that's not in subMacs
+    offline = offline[ offline$mac %in% subMacs, ]
+    
+    # convert numeric values
+    numVars = c("time", "posX", "posY", "orientation", "signal")
+    offline[ numVars ] = lapply(offline[ numVars ], as.numeric)
+    
+    # convert time to POSIX
+    offline$rawTime = offline$time
+    offline$time = offline$time/1000
+    class(offline$time) = c("POSIXt", "POSIXct")
+    
+    # round orientations to nearest 45
+    offline$angle = roundOrientation(offline$orientation)
+    
+    # Combine X and Y positions into a X-Y column
+    offline$posXY = paste(offline$posX, offline$posY, sep = "-")
+    
+    return(offline)
+  }
+
+#read online data 
+macs = unique(offlineSummary$mac)
+online = readData("/home/yat-l/Documents/MSDS 7333 QTW/Wk1/online.final.trace.txt", subMacs = macs)
+
+# Tallying number of signal strengths at each location
+tabonlineXYA = table(online$posXY, online$angle)
+tabonlineXYA[1:6, ]
+
+# reorganize signal strength into columns
+keepVars = c("posXY", "posX","posY", "orientation", "angle")
+byLoc = with(online,
+             by(online, list(posXY),
+                function(x) {
+                  ans = x[1, keepVars]
+                  avgSS = tapply(x$signal, x$mac, mean)
+                  y = matrix(avgSS, nrow = 1, ncol = 6,
+                             dimnames = list(ans$posXY, names(avgSS)))
+                  cbind(ans, y)
+                }))
+onlineSummary = do.call("rbind", byLoc)
+
+#
+refs = seq(0, by = 45, length = 8)
+nearestAngle = roundOrientation(angleNewObs)
+if (m %% 2 == 1) {
+  angles = seq(-45 * (m - 1) /2, 45 * (m - 1) /2, length = m)
+} else {
+  m = m + 1
+  angles = seq(-45 * (m - 1) /2, 45 * (m - 1) /2, length = m)
+  if (sign(angleNewObs - nearestAngle) > -1)
+    angles = angles[ -1 ]
+  else
+    angles = angles[ -m ]
+}
 
 # Observe one observation from the offline data frame
 offline[offline$time==1139643118358,]

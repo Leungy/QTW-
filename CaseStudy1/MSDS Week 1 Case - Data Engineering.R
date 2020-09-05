@@ -3,6 +3,8 @@ library(magrittr)
 library(lattice)
 library(fields)
 library(KernSmooth)
+library(ggplot2)
+library(class)
 
 setwd("/home/yat-l/Documents/MSDS 7333 QTW/Wk1")
 
@@ -10,14 +12,13 @@ setwd("/home/yat-l/Documents/MSDS 7333 QTW/Wk1")
 txt = readLines("/home/yat-l/Documents/MSDS 7333 QTW/Wk1/offline.final.trace.txt")
 
 # Create a function to parse the data
-processLine = function(x)
-{
+processLine = function(x){
   tokens = strsplit(x, "[;=,]")[[1]]
   if (length(tokens) == 10) {
     return(NULL)
   }
-  tmp = matrix(tokens[ - (1:10) ], , 4, byrow = TRUE)
-  cbind(matrix(tokens[c(2, 4, 6:8, 10)], nrow(tmp), 6,
+  tmp = matrix(tokens[ - (1:10) ], ncol=4, byrow = TRUE)
+  cbind(matrix(tokens[c(2, 4, 6:8, 10)], nrow(tmp), ncol=6,
                byrow = TRUE), tmp)
 }
 
@@ -160,7 +161,7 @@ offlineSummary = do.call("rbind", signalSummary)
 # lo.obj.pr = predict(lo.obj, newdata = data.frame(num = (70:120)))
 # lines(x = 70:120, y = lo.obj.pr, col = "#4daf4a", lwd = 2)
 
-#subset a MAC+ Angle from offlineSummary df
+#filter to get the fith MAC and the Angle from offlineSummary df
 oneAPAngle = subset(offlineSummary, mac == subMacs[5] & angle == 0)
 smoothSS = Tps(oneAPAngle[, c("posX","posY")], oneAPAngle$avgSignal)
 vizSmooth = predictSurface(smoothSS)
@@ -293,12 +294,19 @@ angles[angles > 360] = angles[ angles > 360 ] - 360
 offlineSubset =  offlineSummary[ offlineSummary$angle %in% angles, ]
 
 # aggregate signal strengths from angles and reshape data with reshapeSS()
-reshapeSS = function(data, varSignal = "signal", keepVars = c("posXY", "posX","posY")) {
-  byLocation = with(data, by(data, list(posXY), function(x) {
+reshapeSS = function(data, varSignal = "signal", 
+                     keepVars = c("posXY", "posX","posY")) {
+  byLocation =
+    with(data, by(data, list(posXY), 
+                  function(x) {
                     ans = x[1, keepVars]
                     avgSS = tapply(x[ , varSignal ], x$mac, mean)
-                    y = matrix(avgSS, nrow = 1, ncol = 6, dimnames = list(ans$posXY, names(avgSS)))
-                    cbind(ans, y)}))
+                    y = matrix(avgSS, nrow = 1, ncol = 6,
+                               dimnames = list(ans$posXY,
+                                               names(avgSS)))
+                    cbind(ans, y)
+                  }))
+  
   newDataSS = do.call("rbind", byLocation)
   return(newDataSS)
 }
@@ -310,7 +318,7 @@ trainSS = reshapeSS(offlineSubset, varSignal = "avgSignal")
 # angleNewObs= the angle of the new observation; 
 # signals = the training data, i.e., data in the format of offlineSummary;
 # m = the number of angles to include from signals.
-selectTrain = function(angleNewObs, signals, m){
+selectTrain = function(angleNewObs, signals = NULL, m = 1){
     refs = seq(0, by = 45, length = 8)
     nearestAngle = roundOrientation(angleNewObs)
     if (m %% 2 == 1) {
@@ -332,8 +340,8 @@ selectTrain = function(angleNewObs, signals, m){
     reshapeSS(offlineSubset, varSignal = "avgSignal")  
 }
 
-# test angle at 130 with number of angles m=3
-train130 = selectTrain(130, offlineSummary, m = 3)
+# # test angle observed at 130 using offlineSummary data with number of angles to include from signals column m=3
+# train130 = selectTrain(130, offlineSummary, m = 3)
 
 #head(train130)
 #length(train130[[1]]) #166 observations
@@ -347,8 +355,8 @@ findNN = function(newSignal, trainSubset) {
   return(trainSubset[closest, 1:3 ])
 }
 
-#estimate the XY pos, closeXY from findNN
-estXY = lapply(closeXY, function(x) sapply(x, function(x) mean(x[1:k])))
+# #estimate the XY pos, closeXY from findNN
+# estXY = lapply(closeXY, function(x) sapply(x, function(x) mean(x[1:k])))
 
 # predict XY position
 predXY = function(newSignals, newAngles, trainData, numAngles = 1, k = 3){
@@ -382,36 +390,25 @@ permuteLocs = sample(unique(offlineSummary$posXY))
 permuteLocs = matrix(permuteLocs, ncol = v, nrow = floor(length(permuteLocs)/v))
 onlineFold = subset(offlineSummary, posXY %in% permuteLocs[ , 1])
 
-#update reshapeSS for cross-fold training
-reshapeSS = function(data, varSignal = "signal", keepVars = c("posXY", "posX","posY"),sampleAngle = FALSE, refs = seq(0, 315, by = 45)) {
-  byLocation = with(data, by(data, list(posXY), function(x) {
-    if (sampleAngle){x = x[x$angle == sample(refs, size = 1), ]}
-    ans = x[1, keepVars]
-    avgSS = tapply(x[ , varSignal ], x$mac, mean)
-    y = matrix(avgSS, nrow = 1, ncol = 6, dimnames = list(ans$posXY, names(avgSS)))
-    cbind(ans, y)}))
+
+reshapeSS = function(data, varSignal = "signal", 
+                     keepVars = c("posXY", "posX","posY"),
+                     sampleAngle = FALSE, 
+                     refs = seq(0, 315, by = 45)) {
+  byLocation =  with(data, by(data, list(posXY), 
+                  function(x) {
+                    if (sampleAngle) {x = x[x$angle == sample(refs, size = 1), ]}
+                    ans = x[1, keepVars]
+                    avgSS = tapply(x[ , varSignal ], x$mac, mean)
+                    y = matrix(avgSS, nrow = 1, ncol = 6, dimnames = list(ans$posXY,names(avgSS)))
+                    cbind(ans, y)
+                  }))
+  
   newDataSS = do.call("rbind", byLocation)
   return(newDataSS)
 }
 
-# Include all 7 MACs; error=269
-offline = offline
-# variables to keep, building online CV set summary from offline
-keepVars = c("posXY", "posX","posY", "orientation", "angle")
-onlineCVSummary = reshapeSS(offline, keepVars = keepVars, sampleAngle = TRUE)
-# first online fold
-onlineFold = subset(onlineCVSummary,posXY %in% permuteLocs[ , 1])
-# first offline fold
-offlineFold = subset(offlineSummary,posXY %in% permuteLocs[ , -1])
-# Use CV to estimate XY of online from offline
-estFold = predXY(newSignals = onlineFold[ , 6:11],
-                  newAngles = onlineFold[ , 4],
-                  offlineFold, numAngles = 3, k = 3)
-#estimate error in actual using predicted
-actualFold = onlineFold[ , c("posX", "posY")]
-calcError(estFold, actualFold)
-
-# Exclude mac = 00:0f:a3:39:dd:cd ; error=213
+# Exclude mac = 00:0f:a3:39:dd:cd ; error=267.7
 offline1 = offline[offline$mac != "00:0f:a3:39:dd:cd",]
 # variables to keep, building online CV set summary from offline
 keepVars = c("posXY", "posX","posY", "orientation", "angle")
@@ -429,7 +426,7 @@ estFold1 = predXY(newSignals = onlineFold1[ , 6:11],
 actualFold1 = onlineFold1[ , c("posX", "posY")]
 calcError(estFold1, actualFold1)
 
-# Exclude mac = 00:0f:a3:39:e1:c0 ; error= 150
+# Exclude mac = 00:0f:a3:39:e1:c0 ; error= 493.4
 offline2 = offline[offline$mac != "00:0f:a3:39:e1:c0",]
 # variables to keep, building online CV set summary from offline
 keepVars = c("posXY", "posX","posY", "orientation", "angle")
@@ -448,51 +445,74 @@ actualFold2 = onlineFold2[ , c("posX", "posY")]
 calcError(estFold2, actualFold2)
 
 
-# Approximate K for KNN where K=1 to 20 aggregate over k-fold CV
+# Approximate K-neighbors for KNN where K=1 to 20 aggregate over k-fold CV
 K = 15
-err = rep(0, K)
 
-# SSE calculation. All MAC
+# SSE calculation. Masking one of the 00:0f:a3:39 MAC
+err1 = rep(0, K)
 for (j in 1:v) {
-  onlineFold = subset(onlineCVSummary,posXY %in% permuteLocs[ , j])
-  offlineFold = subset(offlineSummary,posXY %in% permuteLocs[ , -j])
-  actualFold = onlineFold[ , c("posX", "posY")]
+  onlineFold1 = subset(onlineCVSummary1,posXY %in% permuteLocs[ , j])
+  offlineFold1 = subset(offlineSummary,posXY %in% permuteLocs[ , -j])
+  actualFold1 = onlineFold1[ , c("posX", "posY")]
   for (k in 1:K) {
-    estFold = predXY(newSignals = onlineFold[ , 6:11],
-                     newAngles = onlineFold[ , 4],
-                     offlineFold, numAngles = 3, k = k)
-    err[k] = err[k] + calcError(estFold, actualFold)
+    estFold1 = predXY(newSignals = onlineFold1[ , 6:11],
+                     newAngles = onlineFold1[ , 4],
+                     offlineFold1, numAngles = 3, k = k)
+    err1[k] = err1[k] + calcError(estFold1, actualFold1)
   }
 }
 
-# SSE calculation. Masking one of the 00:0f:a3:39 MAC
-
-# SSE calculation. Masking the other 00:0f:a3:39
-
+# SSE calculation. Masking 00:0f:a3:39:e1:c0
+err2 = rep(0, K)
+for (j in 1:v) {
+  onlineFold2 = subset(onlineCVSummary2,posXY %in% permuteLocs[ , j])
+  offlineFold2 = subset(offlineSummary,posXY %in% permuteLocs[ , -j])
+  actualFold2 = onlineFold2[ , c("posX", "posY")]
+  for (k in 1:K) {
+    estFold2 = predXY(newSignals = onlineFold2[ , 6:11],
+                     newAngles = onlineFold2[ , 4],
+                     offlineFold2, numAngles = 3, k = k)
+    err2[k] = err2[k] + calcError(estFold2, actualFold2)
+  }
+}
 
 # elbow plot
-plot(y = err, x = (1:K),  type = "l", lwd= 2,
-     ylim = c(1000, 1750),
+plot(y = err1, x = (1:K),  type = "l", lwd= 2,
+     ylim = c(900, 2200),
      xlab = "Number of Neighbors",
      ylab = "Sum of Square Errors")
 title(main ="KNN Elbow Plot: 5-Fold Cross-Validated SSE values for K = 1 to 15", 
       sub="Masking MAC == 00:0f:a3:39:dd:cd ")
-rmseMin = min(err)
-kMin = which(err == rmseMin)[1]
+rmseMin = min(err1)
+kMin = which(err1 == rmseMin)[1]
 segments(x0 = 0, x1 = kMin, y0 = rmseMin, col = gray(0.4), lty = 2, lwd = 2)
 segments(x0 = kMin, x1 = kMin, y0 = 1100,  y1 = rmseMin, col = grey(0.4), lty = 2, lwd = 2)
 mtext(kMin, side = 1, line = 1, at = kMin, col = grey(0.4))
 text(x = kMin - 2, y = rmseMin + 40, label = as.character(round(rmseMin)), col = grey(0.4))
 
-# Calculated Actual-Predicted error at K=3 == 306.7
-estXYk3 = predXY(newSignals = onlineSummary[ , 6:11], 
+plot(y = err2, x = (1:K),  type = "l", lwd= 2,
+     ylim = c(900, 2200),
+     xlab = "Number of Neighbors",
+     ylab = "Sum of Square Errors")
+title(main ="KNN Elbow Plot: 5-Fold Cross-Validated SSE values for K = 1 to 15", 
+      sub="Masking MAC == 00:0f:a3:39:e1:c0 ")
+rmseMin = min(err2)
+kMin = which(err2 == rmseMin)[1]
+segments(x0 = 0, x1 = kMin, y0 = rmseMin, col = gray(0.4), lty = 2, lwd = 2)
+segments(x0 = kMin, x1 = kMin, y0 = 1100,  y1 = rmseMin, col = grey(0.4), lty = 2, lwd = 2)
+mtext(kMin, side = 1, line = 1, at = kMin, col = grey(0.4))
+text(x = kMin - 2, y = rmseMin + 40, label = as.character(round(rmseMin)), col = grey(0.4))
+
+# KNN of 7 is the optimal solution regardless of which MAC to mask
+# Calculated Actual-Predicted error. SSE= 273.7
+estXYk7 = predXY(newSignals = onlineSummary[ , 6:11], 
                  newAngles = onlineSummary[ , 4], 
-                 offlineSummary, numAngles = 3, k = 3)
+                 offlineSummary, numAngles = 3, k = 7)
 actualXY = onlineSummary[ , c("posX", "posY")]
-calcError(estXYk3, actualXY)
+calcError(estXYk7, actualXY)
 
 
-
+# find weighted coeff for distance
 
 
 

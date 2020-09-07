@@ -317,7 +317,7 @@ trainSS = reshapeSS(offlineSubset, varSignal = "avgSignal")
 # selectTrain function
 # angleNewObs= the angle of the new observation; 
 # signals = the training data, i.e., data in the format of offlineSummary;
-# m = the number of angles to include from signals.
+# m = the number of angles to include from signals. can be 1 to 3 (3 is the total orientation angles they use)
 selectTrain = function(angleNewObs, signals = NULL, m = 1){
     refs = seq(0, by = 45, length = 8)
     nearestAngle = roundOrientation(angleNewObs)
@@ -358,7 +358,7 @@ findNN = function(newSignal, trainSubset) {
 # #estimate the XY pos, closeXY from findNN
 # estXY = lapply(closeXY, function(x) sapply(x, function(x) mean(x[1:k])))
 
-# predict XY position
+# predict XY position, default K neighbours =3 but can be overloaded to other integer values
 predXY = function(newSignals, newAngles, trainData, numAngles = 1, k = 3){
   closeXY = list(length = nrow(newSignals))
   for (i in 1:nrow(newSignals)) {
@@ -408,7 +408,7 @@ reshapeSS = function(data, varSignal = "signal",
   return(newDataSS)
 }
 
-# Exclude mac = 00:0f:a3:39:dd:cd ; error=267.7
+# Exclude mac = 00:0f:a3:39:dd:cd ; error=259.4
 offline1 = offline[offline$mac != "00:0f:a3:39:dd:cd",]
 # variables to keep, building online CV set summary from offline
 keepVars = c("posXY", "posX","posY", "orientation", "angle")
@@ -420,17 +420,17 @@ offlineFold1 = subset(offlineSummary,posXY %in% permuteLocs[ , -1])
 # Use CV to estimate XY of online from offline
 estFold1 = predXY(newSignals = onlineFold1[ , 6:11],
                  newAngles = onlineFold1[ , 4],
-                 offlineFold1, numAngles = 3, k = 3)
+                 offlineFold1, numAngles = 3, k = k)
 
 #estimate error in actual using predicted
 actualFold1 = onlineFold1[ , c("posX", "posY")]
 calcError(estFold1, actualFold1)
 
-# Exclude mac = 00:0f:a3:39:e1:c0 ; error= 493.4
+# Exclude mac = 00:0f:a3:39:e1:c0 ; error= 492.1
 offline2 = offline[offline$mac != "00:0f:a3:39:e1:c0",]
 # variables to keep, building online CV set summary from offline
 keepVars = c("posXY", "posX","posY", "orientation", "angle")
-onlineCVSummary2 = reshapeSS(offline1, keepVars = keepVars, sampleAngle = TRUE)
+onlineCVSummary2 = reshapeSS(offline2, keepVars = keepVars, sampleAngle = TRUE)
 # first online fold
 onlineFold2 = subset(onlineCVSummary2,posXY %in% permuteLocs[ , 1])
 # first offline fold
@@ -438,7 +438,7 @@ offlineFold2 = subset(offlineSummary,posXY %in% permuteLocs[ , -1])
 # Use CV to estimate XY of online from offline
 estFold2 = predXY(newSignals = onlineFold2[ , 6:11],
                  newAngles = onlineFold2[ , 4],
-                 offlineFold2, numAngles = 3, k = 3)
+                 offlineFold2, numAngles = 3, k = k)
 
 #estimate error in actual using predicted
 actualFold2 = onlineFold2[ , c("posX", "posY")]
@@ -477,6 +477,7 @@ for (j in 1:v) {
 }
 
 # elbow plot
+#SSE 1160 , KNN=7
 plot(y = err1, x = (1:K),  type = "l", lwd= 2,
      ylim = c(900, 2200),
      xlab = "Number of Neighbors",
@@ -490,8 +491,9 @@ segments(x0 = kMin, x1 = kMin, y0 = 1100,  y1 = rmseMin, col = grey(0.4), lty = 
 mtext(kMin, side = 1, line = 1, at = kMin, col = grey(0.4))
 text(x = kMin - 2, y = rmseMin + 40, label = as.character(round(rmseMin)), col = grey(0.4))
 
+# SSE after fixing line 433 from offline1 to offline2, 2710, KNN of 10
 plot(y = err2, x = (1:K),  type = "l", lwd= 2,
-     ylim = c(900, 2200),
+     ylim = c(2000, 3900),
      xlab = "Number of Neighbors",
      ylab = "Sum of Square Errors")
 title(main ="KNN Elbow Plot: 5-Fold Cross-Validated SSE values for K = 1 to 15", 
@@ -511,10 +513,91 @@ estXYk7 = predXY(newSignals = onlineSummary[ , 6:11],
 actualXY = onlineSummary[ , c("posX", "posY")]
 calcError(estXYk7, actualXY)
 
+# find weighted dist average? 
+# update the findNN function to return the distance (book p35)
+# how close they actually are from the new observation’s signals
+findNN = function(newSignal, trainSubset) {
+  diffs = apply(trainSubset[ , 4:9], 1,
+                function(x) x - newSignal)
+  dists = apply(diffs, 2, function(x) sqrt(sum(x^2)) )
+  closest = order(dists)
+  return(list(trainSubset[closest, 1:3 ], dists[order(dists)]))
+}
 
-# find weighted coeff for distance
+#find the weights (1/di) / summation of {i from 1 to k (1/di)}
+# modify preXY function using the weighted distance
+predXY = function(newSignals, newAngles, trainData, numAngles = 1, k = 3){
+  closeXY = list(length = nrow(newSignals))
+  closeDist = list(length = nrow(newSignals))
+#findNN returns 2 variables, first one is XY and second on is the distance
+    for (i in 1:nrow(newSignals)) {
+    trainSS = selectTrain(newAngles[i], trainData, m = numAngles)
+    results = findNN(newSignal = as.numeric(newSignals[i, ]), trainSS)
+    closeXY[[i]] = results[[1]]
+    closeDist[[i]] = results[[2]]
+  }
+#weighted distance
+  # weightedDist returns a list of closeDist
+  weightedDist = list(length = length(closeDist))
+# find all weighted distance in the closeDist list
+  for(i in 1:length(closeDist)){
+    # k as in number of neighbours to use
+    W = list(length(k))
+    # for each j between 1 to k
+    for (j in 1:k){
+      # find weighted distance equation
+      W[j] = (1/closeDist[[i]][j])/sum(1/closeDist[[i]][1:k])    
+    }
+    # return the weighted distance values to the weightedDist list
+    weightedDist[[i]] = W
+  }
+# apply weighted distance to refine the estimated XY
+  refinedXY = list(length = length(closeXY))
+  # multiply weight to each closeXY
+  for (i in 1:length(closeXY)){
+    # not sure if this is right
+    refinedXY[[i]]=as.matrix(closeXY[[i]][1:k,2:3])*unlist(weightedDist[[i]])
+  }
+  estXY = lapply(refinedXY,function(x) apply(x, 2, function(x)sum(x)))
+  estXY = do.call("rbind", estXY)
+  return(estXY)
+}
 
+# re-run the KNN masking 00:0f:a3:39:dd:cd
+# Approximate K-neighbors for KNN where K=1 to 20 aggregate over k-fold CV
+K = 15
 
+# SSE calculation. Masking 00:0f:a3:39:dd:cd
+err = rep(0, K)
+for (j in 1:v) {
+  onlineFold1 = subset(onlineCVSummary1,posXY %in% permuteLocs[ , j])
+  offlineFold1 = subset(offlineSummary,posXY %in% permuteLocs[ , -j])
+  actualFold1 = onlineFold1[ , c("posX", "posY")]
+  for (k in 1:K) {
+    estFold1 = predXY(newSignals = onlineFold1[ , 6:11],
+                      newAngles = onlineFold1[ , 4],
+                      offlineFold1, numAngles = 3, k = k)
+    err[k] = err[k] + calcError(estFold1, actualFold1)
+  }
+}
 
+plot(y = err, x = (1:K),  type = "l", lwd= 2,
+     ylim = c(900, 2200),
+     xlab = "Number of Neighbors",
+     ylab = "Sum of Square Errors")
+title(main ="KNN Elbow Plot: 5-Fold Cross-Validated SSE values for K = 1 to 15", 
+      sub="Masking MAC == 00:0f:a3:39:dd:cd ; Modified findNN and predXY functions")
+rmseMin = min(err)
+kMin = which(err == rmseMin)[1]
+segments(x0 = 0, x1 = kMin, y0 = rmseMin, col = gray(0.4), lty = 2, lwd = 2)
+segments(x0 = kMin, x1 = kMin, y0 = 1100,  y1 = rmseMin, col = grey(0.4), lty = 2, lwd = 2)
+mtext(kMin, side = 1, line = 1, at = kMin, col = grey(0.4))
+text(x = kMin - 2, y = rmseMin + 40, label = as.character(round(rmseMin)), col = grey(0.4))
 
-
+# SSE with weighted distance
+# Calculated Actual-Predicted error. SSE= 267.4
+estXYk8 = predXY(newSignals = onlineSummary[ , 6:11], 
+                 newAngles = onlineSummary[ , 4], 
+                 offlineSummary, numAngles = 3, k = kMin )
+actualXY = onlineSummary[ , c("posX", "posY")]
+calcError(estXYk8, actualXY)
